@@ -1,39 +1,38 @@
-# rounding.py — Rounding/truncation helpers for the Quoting Calculator.
-#
-# Responsibility: provide a single quantize() function that applies the
-# user-selected rounding mode (ROUND_HALF_UP or ROUND_DOWN/truncate) to a
-# Decimal value at a given number of decimal places.
-#
-# This module has no side effects at import time and no I/O.
+"""Rounding helpers for price arithmetic.
 
-from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
+All price math in this program uses :class:`decimal.Decimal` to avoid the
+binary-float drift that would otherwise make percentage comparisons
+unreliable.  This module centralises the single operation that matters
+to the rest of the code: quantising a ``Decimal`` to a fixed number of
+decimal places either via round-half-up (when the caller wants
+"rounding") or truncation (when the caller does not).
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
 
 def quantize(value: Decimal, decimals: int, rounding_on: bool) -> Decimal:
-    """Round or truncate *value* to *decimals* decimal places.
+    """Quantise ``value`` to exactly ``decimals`` digits after the point.
 
     Args:
-        value:       The Decimal to be rounded/truncated.
-        decimals:    Number of decimal places to keep (>= 0).
-        rounding_on: True  → ROUND_HALF_UP (standard business rounding).
-                     False → ROUND_DOWN   (truncate, drop excess digits).
+        value: the Decimal to quantise.
+        decimals: number of fractional digits to keep; must be >= 0.
+        rounding_on: when True use ROUND_HALF_UP, otherwise ROUND_DOWN.
 
     Returns:
-        A new Decimal with exactly *decimals* digits after the decimal point.
-
-    Examples:
-        >>> quantize(Decimal("1.235"), 2, True)
-        Decimal('1.24')
-        >>> quantize(Decimal("1.235"), 2, False)
-        Decimal('1.23')
-        >>> quantize(Decimal("7"), 0, True)
-        Decimal('7')
+        A Decimal with the requested scale.
     """
-    # Build the quantization target string, e.g. decimals=2 → "0.01", decimals=0 → "1"
-    if decimals == 0:
-        quant_str = "1"
-    else:
-        quant_str = "0." + "0" * decimals
+    if decimals < 0:
+        raise ValueError("decimals must be >= 0")
 
-    rounding_mode = ROUND_HALF_UP if rounding_on else ROUND_DOWN
-    return value.quantize(Decimal(quant_str), rounding=rounding_mode)
+    # Build the quantiser (e.g. Decimal("0.01") for decimals=2, Decimal("1")
+    # for decimals=0).  Using a string keeps the exact desired scale.
+    if decimals == 0:
+        quantiser = Decimal("1")
+    else:
+        quantiser = Decimal("1e-{}".format(decimals))
+
+    mode = ROUND_HALF_UP if rounding_on else ROUND_DOWN
+    return value.quantize(quantiser, rounding=mode)

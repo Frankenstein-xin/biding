@@ -1,2 +1,3 @@
-# Biding — Quoting Calculator package.
-# Exposes the public API surface used by __main__.py.
+"""Biding — quoting calculator package."""
+
+__version__ = "0.1.0"

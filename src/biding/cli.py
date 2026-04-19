@@ -1,172 +1,147 @@
-# cli.py — Command-line argument parsing for the Quoting Calculator.
-#
-# Responsibility: parse and coerce raw argv strings into a validated
-# CalculationParams dataclass. All argparse usage is confined to this module.
-#
-# Public surface:
-#   build_parser() -> argparse.ArgumentParser
-#   parse_args(argv)  -> CalculationParams
+"""Command-line interface for the quoting calculator.
+
+This module is the only place that imports ``argparse``.  It builds the
+parser, coerces string inputs to the right types, and returns a typed,
+validated :class:`biding.models.CalculationParams`.  Validation of field
+values (e.g. ``start-price > 0``) is delegated to the dataclass's
+``__post_init__``; this file only handles type coercion and argparse
+error surfacing.
+"""
 
 from __future__ import annotations
 
 import argparse
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Sequence
 
 from biding.models import CalculationParams
 
 
-# ---------------------------------------------------------------------------
-# Type coercion helpers (used as argparse `type=` callbacks)
-# ---------------------------------------------------------------------------
+_BOOL_TRUE = {"true", "yes", "1", "y", "on"}
+_BOOL_FALSE = {"false", "no", "0", "n", "off"}
+
 
 def _decimal_type(value: str) -> Decimal:
-    """Parse a string into Decimal, rejecting scientific notation and NaN/Inf.
+    """Parse a CLI string into a Decimal without going through float.
 
-    Raises argparse.ArgumentTypeError on invalid input so argparse can emit
-    a clean user-facing error without a Python traceback.
+    Rejects scientific notation and NaN/Inf because money values are
+    always decimal.  Raises argparse's dedicated error type so the
+    message is surfaced cleanly by the parser.
     """
-    try:
-        d = Decimal(value)
-    except InvalidOperation:
-        raise argparse.ArgumentTypeError(f"invalid decimal value: {value!r}")
-    if not d.is_finite():
+    lowered = value.strip().lower()
+    if "e" in lowered or "nan" in lowered or "inf" in lowered:
         raise argparse.ArgumentTypeError(
-            f"decimal value must be finite, got: {value!r}"
+            f"invalid decimal value: {value!r}"
         )
-    return d
-
-
-_BOOL_TRUE_VALUES = {"true", "yes", "1", "y", "on"}
-_BOOL_FALSE_VALUES = {"false", "no", "0", "n", "off"}
+    try:
+        return Decimal(value)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError(
+            f"invalid decimal value: {value!r}"
+        ) from exc
 
 
 def _bool_type(value: str) -> bool:
-    """Parse a string into bool, case-insensitively.
-
-    Accepted truthy strings:  true, yes, 1, y, on
-    Accepted falsy strings:   false, no, 0, n, off
-    Anything else → ArgumentTypeError.
-    """
+    """Parse a CLI string into a bool, accepting the usual English tokens."""
     lowered = value.strip().lower()
-    if lowered in _BOOL_TRUE_VALUES:
+    if lowered in _BOOL_TRUE:
         return True
-    if lowered in _BOOL_FALSE_VALUES:
+    if lowered in _BOOL_FALSE:
         return False
     raise argparse.ArgumentTypeError(
-        f"invalid boolean value: {value!r}. "
-        "Use true/false, yes/no, 1/0, y/n, or on/off"
+        f"invalid boolean value: {value!r} (expected true/false)"
     )
 
 
 def _path_type(value: str) -> Path:
-    """Expand ~ and resolve to an absolute Path."""
+    """Expand ``~`` and resolve to an absolute path."""
     return Path(value).expanduser().resolve()
 
 
-# ---------------------------------------------------------------------------
-# Parser construction
-# ---------------------------------------------------------------------------
-
 def build_parser() -> argparse.ArgumentParser:
-    """Build and return the argparse parser for the biding CLI."""
+    """Return the top-level argparse parser.
+
+    Kept public so tests can introspect the argument set without firing
+    a full parse.
+    """
     parser = argparse.ArgumentParser(
         prog="biding",
         description=(
-            "Find the fewest-rounds price-reduction sequence from a starting "
-            "price down to a target price, obeying per-step percentage and "
-            "absolute-reduction constraints. Appends the result to an xlsx workbook."
+            "Find the fewest-rounds price reduction sequence from a "
+            "start price to a target price under a max-percent and "
+            "min-absolute reduction constraint, and append the result "
+            "to an xlsx workbook."
         ),
         epilog=(
             "Example:\n"
-            "  python -m biding --start-price 100 --target-price 45 \\\n"
-            "    --max-pct 50 --min-reduction 10 --decimals 2 \\\n"
-            "    --rounding true --output ./out/quotes.xlsx"
+            "  python -m biding \\\n"
+            "    --start-price 100 --target-price 45 --max-pct 50 \\\n"
+            "    --min-reduction 10 --decimals 2 --rounding true \\\n"
+            "    --output ./out/quotes.xlsx"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
+    # All arguments are required per PRD §3.
     parser.add_argument(
         "--start-price",
-        required=True,
         type=_decimal_type,
-        metavar="PRICE",
-        help="Starting price (must be > 0)",
+        required=True,
+        help="Starting price (Decimal, > 0).",
     )
     parser.add_argument(
         "--target-price",
-        required=True,
         type=_decimal_type,
-        metavar="PRICE",
+        required=True,
         help=(
-            "Target price to reach (must be < start-price). "
-            "Pass 0 to auto-compute the lowest feasible target."
+            "Target price (Decimal, >= 0). Use 0 to auto-compute from "
+            "--max-pct and --min-reduction."
         ),
     )
     parser.add_argument(
         "--max-pct",
-        required=True,
         type=_decimal_type,
-        metavar="PCT",
-        help="Maximum percentage reduction per quote round (e.g. 5 for 5%%)",
+        required=True,
+        help="Max percentage reduction per quote, e.g. 5 for 5 %% (0 < v < 100).",
     )
     parser.add_argument(
         "--min-reduction",
-        required=True,
         type=_decimal_type,
-        metavar="AMOUNT",
-        help="Minimum absolute reduction per quote round (must be > 0)",
+        required=True,
+        help="Minimum absolute reduction per quote (Decimal, > 0).",
     )
     parser.add_argument(
         "--decimals",
-        required=True,
         type=int,
-        metavar="N",
-        help="Number of decimal places to keep in price arithmetic (>= 0; typically 2)",
+        required=True,
+        help="Number of decimal places to keep in price math (>= 0).",
     )
     parser.add_argument(
         "--rounding",
-        required=True,
         type=_bool_type,
-        metavar="BOOL",
-        help=(
-            "Rounding mode: true = round-half-up (business rounding), "
-            "false = truncate"
-        ),
+        required=True,
+        help="true = round-half-up, false = truncate.",
     )
     parser.add_argument(
         "--output",
-        required=True,
         type=_path_type,
-        metavar="FILE",
-        help="Path to the xlsx result file (created if it does not exist)",
+        required=True,
+        help="Destination xlsx file path (parent dirs created if missing).",
     )
-
     return parser
 
 
-# ---------------------------------------------------------------------------
-# Public parse entry point
-# ---------------------------------------------------------------------------
+def parse_args(argv: Sequence[str] | None = None) -> CalculationParams:
+    """Parse ``argv`` into a validated :class:`CalculationParams`.
 
-def parse_args(argv: list[str] | None = None) -> CalculationParams:
-    """Parse argv and return a validated CalculationParams.
-
-    Args:
-        argv: list of CLI argument strings (e.g. sys.argv[1:]).
-              Pass None to let argparse read sys.argv[1:] automatically.
-
-    Returns:
-        CalculationParams with all fields validated.
-
-    Raises:
-        SystemExit(2): argparse error — missing flags or bad type coercion.
-        ValueError:    cross-field validation failure in CalculationParams.__post_init__.
+    Standard argparse errors (missing arg, bad format) raise
+    ``SystemExit(2)`` — that behavior is inherited from argparse.  Field
+    validation errors (e.g. ``start-price <= 0``) raise ``ValueError``
+    from the dataclass, which ``main`` converts to exit code 3.
     """
     parser = build_parser()
     ns = parser.parse_args(argv)
-
-    # Construct the dataclass; __post_init__ performs cross-field validation
     return CalculationParams(
         start_price=ns.start_price,
         target_price=ns.target_price,
@@ -176,3 +151,6 @@ def parse_args(argv: list[str] | None = None) -> CalculationParams:
         rounding=ns.rounding,
         output_path=ns.output,
     )
+
+
+__all__ = ["build_parser", "parse_args"]

@@ -1,7 +1,12 @@
-# Entry point for `python -m biding ...`.
-# Delegates entirely to main.main so all logic stays in main.py.
+"""Entry point for ``python -m biding``.
+
+Delegates to :func:`biding.main.main` and returns its exit code.
+"""
 
 import sys
+
 from biding.main import main
 
-sys.exit(main(sys.argv[1:]))
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
