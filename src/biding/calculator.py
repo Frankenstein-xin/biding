@@ -21,7 +21,7 @@ translation of that design.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal, getcontext
+from decimal import Decimal, ROUND_DOWN, getcontext
 from typing import Optional
 
 from biding.models import (
@@ -130,6 +130,7 @@ def _candidates(
     d = params.decimals
     r = params.rounding
     p_ratio = params.max_pct / _HUNDRED
+    quantiser = Decimal(1) if d == 0 else Decimal("1e-{}".format(d))
 
     result: list[Decimal] = []
 
@@ -144,11 +145,20 @@ def _candidates(
 
     # 1. direct hit
     _push(target)
-    # 2. max reduction
-    _push(x - x * p_ratio)
-    # 3. safe lowest (target + min_reduction)
+    # 2. max reduction.  Floor-quantise the *reduction amount* so rounding
+    #    never inflates it past x * p_ratio (which would fail _step_valid).
+    max_reduction = (x * p_ratio).quantize(quantiser, rounding=ROUND_DOWN)
+    _push(x - max_reduction)
+    # 3. direct-hit entry ceiling: the highest y from which the *next*
+    #    step can directly hit the target under the max-pct constraint
+    #    (y <= target / (1 - p_ratio)).  Floor-quantise so rounding can
+    #    never push it above the true ceiling.
+    if p_ratio < 1:
+        ceiling_raw = target / (Decimal(1) - p_ratio)
+        _push(ceiling_raw.quantize(quantiser, rounding=ROUND_DOWN))
+    # 4. safe lowest (target + min_reduction)
     _push(target + params.min_reduction)
-    # 4. min reduction
+    # 5. min reduction
     _push(x - params.min_reduction)
 
     return result
@@ -193,44 +203,50 @@ def _search(
 ) -> Optional[list[Decimal]]:
     """Return the fewest-rounds path ``[start, ..., target]`` or ``None``.
 
-    Uses a memoised DFS over the candidate lattice.  The candidate set
-    at each node is small (<= 4) and the feasibility predicate prunes
-    almost all dead ends, so the search is fast for realistic inputs.
+    Breadth-first search over the candidate lattice.  BFS guarantees the
+    first time we dequeue ``target`` the accumulated path has the fewest
+    rounds — since each edge is one round of quoting, level-order
+    traversal is exactly the fewest-rounds metric.
+
+    ``visited`` dedupes prices across branches.  Because every edge
+    strictly reduces the price there are no cycles; ``visited`` simply
+    caps the search at the set of reachable distinct prices.
     """
-    memo: dict[Decimal, Optional[list[Decimal]]] = {}
+    from collections import deque
 
-    # Depth cap prevents pathological inputs (near-zero max_pct) from
-    # spinning the search.  ``log(start/target) / log(1/(1-p))`` is the
-    # continue-zone bound; we allow a large multiple to cover arbitrary
-    # min-reduction walks.
-    depth_cap = 10_000
+    if start == target:
+        return [start]
 
-    def dfs(x: Decimal, depth: int) -> Optional[list[Decimal]]:
-        if x == target:
-            return [x]
-        if depth > depth_cap:
-            return None
-        if x in memo:
-            return memo[x]
-        memo[x] = None  # cycle guard
+    # Predecessor map: child -> parent.  Reconstruct path at the end.
+    parent: dict[Decimal, Decimal] = {}
+    visited: set[Decimal] = {start}
+    queue: deque[Decimal] = deque([start])
 
-        best: Optional[list[Decimal]] = None
+    # Node cap guards pathological inputs (e.g. vanishing max_pct) from
+    # walking an unbounded lattice of min-reduction steps.
+    node_cap = 100_000
+
+    while queue and len(visited) < node_cap:
+        x = queue.popleft()
         for y in _candidates(x, target, params):
+            if y in visited:
+                continue
             if not _step_valid(x, y, params):
                 continue
             if not _feasible(y, target, params):
                 continue
-            sub = dfs(y, depth + 1)
-            if sub is None:
-                continue
-            candidate_path = [x] + sub
-            if best is None or len(candidate_path) < len(best):
-                best = candidate_path
+            visited.add(y)
+            parent[y] = x
+            if y == target:
+                # Reconstruct path target -> ... -> start, then reverse.
+                path = [y]
+                while path[-1] != start:
+                    path.append(parent[path[-1]])
+                path.reverse()
+                return path
+            queue.append(y)
 
-        memo[x] = best
-        return best
-
-    return dfs(start, 0)
+    return None
 
 
 def _path_to_steps(

@@ -88,10 +88,15 @@ def test_calculate_direct_hit() -> None:
 
 
 def test_calculate_prd_section_7_trap() -> None:
-    # Naive "always max reduction" dead-ends; algorithm takes 100→55→45.
+    # Naive "always max reduction" dead-ends at 50 (in [target, target+min)).
+    # Any fewest-rounds solution for (100, 45, 50%, 10) takes 2 rounds.
     r = calculate(_params())
-    prices = [r.steps[0].start_amount] + [s.end_amount for s in r.steps]
-    assert prices == [Decimal("100.00"), Decimal("55.00"), Decimal("45.00")]
+    assert len(r.steps) == 2
+    assert r.steps[0].start_amount == Decimal("100.00")
+    assert r.steps[-1].end_amount == Decimal("45.00")
+    for s in r.steps:
+        assert s.reduction_amount >= Decimal("10")
+        assert s.reduction_amount <= s.start_amount * Decimal("50") / Decimal("100")
 
 
 def test_calculate_auto_target() -> None:
